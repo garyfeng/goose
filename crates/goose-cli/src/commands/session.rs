@@ -231,6 +231,7 @@ pub async fn handle_session_export(
 
     let output = match format.as_str() {
         "json" => serde_json::to_string_pretty(&session)?,
+        "native-json" => serde_json::to_string(&session)?,
         "yaml" => serde_yaml::to_string(&session)?,
         "markdown" => {
             let conversation = session

@@ -36,6 +36,7 @@ use crate::conversation::message::{
     ToolRequest,
 };
 use crate::conversation::{debug_conversation_fix, fix_conversation, Conversation};
+use crate::lifecycle_hooks::{TurnLifecycleContext, TurnLifecycleGuard};
 use crate::mcp_utils::ToolResult;
 use crate::permission::permission_inspector::PermissionInspector;
 use crate::permission::permission_judge::PermissionCheckResult;
@@ -1106,6 +1107,15 @@ impl Agent {
         let conversation_to_compact = conversation.clone();
 
         Ok(Box::pin(async_stream::try_stream! {
+            let turn_context = TurnLifecycleContext {
+                platform: self.config.goose_platform.to_string(),
+                session_id: session_config.id.clone(),
+                session_ref: format!("goose://session/{}", session_config.id),
+                working_dir: session.working_dir.clone(),
+                turn_id: Uuid::new_v4().to_string(),
+            };
+            let mut turn_lifecycle_guard = TurnLifecycleGuard::start(turn_context);
+
             let final_conversation = if !needs_auto_compact {
                 conversation
             } else {
@@ -1158,6 +1168,7 @@ impl Agent {
                         compacted_conversation
                     }
                     Err(e) => {
+                        turn_lifecycle_guard.finish_error(Some("compaction_failed".to_string()));
                         yield AgentEvent::Message(
                             Message::assistant().with_text(
                                 format!("Ran into this error trying to compact: {e}.\n\nPlease try again or create a new session")
@@ -1168,9 +1179,36 @@ impl Agent {
                 }
             };
 
-            let mut reply_stream = self.reply_internal(final_conversation, session_config, session, cancel_token).await?;
+            let reply_stream_result = self
+                .reply_internal(final_conversation, session_config, session, cancel_token.clone())
+                .await;
+            let mut reply_stream = match reply_stream_result {
+                Ok(stream) => stream,
+                Err(err) => {
+                    turn_lifecycle_guard.finish_error(Some("reply_internal_failed".to_string()));
+                    Err(err)?
+                }
+            };
+
             while let Some(event) = reply_stream.next().await {
-                yield event?;
+                match event {
+                    Ok(event) => yield event,
+                    Err(err) => {
+                        if is_token_cancelled(&cancel_token) {
+                            turn_lifecycle_guard.finish_cancelled();
+                        } else {
+                            turn_lifecycle_guard.finish_error(Some("reply_stream_error".to_string()));
+                        }
+
+                        Err(err)?
+                    }
+                }
+            }
+
+            if is_token_cancelled(&cancel_token) {
+                turn_lifecycle_guard.finish_cancelled();
+            } else {
+                turn_lifecycle_guard.finish_success();
             }
         }))
     }

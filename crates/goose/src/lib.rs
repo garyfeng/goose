@@ -17,6 +17,7 @@ pub mod execution;
 pub mod gateway;
 pub mod goose_apps;
 pub mod hints;
+pub mod lifecycle_hooks;
 pub mod logging;
 pub mod mcp_utils;
 pub mod model;

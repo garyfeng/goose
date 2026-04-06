@@ -1,7 +1,7 @@
 use crate::routes::errors::ErrorResponse;
 use crate::routes::recipe_utils::{apply_recipe_to_agent, build_recipe_with_parameter_values};
 use crate::state::AppState;
-use axum::extract::{DefaultBodyLimit, State};
+use axum::extract::{DefaultBodyLimit, Query, State};
 use axum::routing::post;
 use axum::{
     extract::Path,
@@ -306,11 +306,18 @@ async fn delete_session(
     Ok(StatusCode::OK)
 }
 
+#[derive(Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+struct ExportQuery {
+    format: Option<String>,
+}
+
 #[utoipa::path(
     get,
     path = "/sessions/{session_id}/export",
     params(
-        ("session_id" = String, Path, description = "Unique identifier for the session")
+        ("session_id" = String, Path, description = "Unique identifier for the session"),
+        ("format" = Option<String>, Query, description = "Export format: json|native-json")
     ),
     responses(
         (status = 200, description = "Session exported successfully", body = String),
@@ -326,12 +333,21 @@ async fn delete_session(
 async fn export_session(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
+    Query(query): Query<ExportQuery>,
 ) -> Result<Json<String>, StatusCode> {
-    let exported = state
+    let format = query.format.as_deref().unwrap_or("json");
+    let session = state
         .session_manager()
-        .export_session(&session_id)
+        .get_session(&session_id, true)
         .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
+
+    let exported = match format {
+        "json" => serde_json::to_string_pretty(&session),
+        "native-json" => serde_json::to_string(&session),
+        _ => return Err(StatusCode::BAD_REQUEST),
+    }
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(Json(exported))
 }
